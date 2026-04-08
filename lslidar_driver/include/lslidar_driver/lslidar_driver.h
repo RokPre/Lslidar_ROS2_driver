@@ -25,6 +25,8 @@
 
 #include "input.h"
 #include "lslidar_log.h"
+#include <utility>
+#include <vector>
 #include <string>
 #include <thread>
 #include <memory>
@@ -250,6 +252,10 @@ namespace lslidar_driver {
 
         bool determineLidarType();
 
+        static int normalizeAngle100(int angle);
+
+        bool isAngleDisabled(int azimuth) const;
+
         //int calculateRemappedScanIndex(int fir_idx, int ring_);
 
     public:
@@ -258,8 +264,7 @@ namespace lslidar_driver {
         int scan_num{};
         int angle_disable_min{};
         int angle_disable_max{};
-        int angle_able_min{};
-        int angle_able_max{};
+        std::vector<std::pair<int, int>> ignored_angle_ranges_;
         uint16_t last_azimuth;
         uint64_t packet_time_s;
         uint64_t packet_time_ns;

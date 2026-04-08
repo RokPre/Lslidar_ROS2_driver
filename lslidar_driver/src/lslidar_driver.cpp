@@ -63,6 +63,37 @@ namespace lslidar_driver {
     //     return (distance >= min_range && distance < max_range);
     // }
 
+    int LslidarDriver::normalizeAngle100(int angle) {
+        while (angle < 0) {
+            angle += 36000;
+        }
+        while (angle >= 36000) {
+            angle -= 36000;
+        }
+        return angle;
+    }
+
+    bool LslidarDriver::isAngleDisabled(int azimuth) const {
+        azimuth = normalizeAngle100(azimuth);
+        for (const auto &range : ignored_angle_ranges_) {
+            int start = range.first;
+            int end = range.second;
+            if (start == end) {
+                continue;
+            }
+            if (start < end) {
+                if (azimuth >= start && azimuth <= end) {
+                    return true;
+                }
+            } else {
+                if (azimuth >= start || azimuth <= end) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     bool LslidarDriver::loadParameters() {
         this->declare_parameter<std::string>("pcap", "");
         this->declare_parameter<double>("packet_rate", 1695.0);
@@ -77,6 +108,7 @@ namespace lslidar_driver {
         this->declare_parameter<double>("max_range", 150.0);
         this->declare_parameter<int>("angle_disable_min", 0);
         this->declare_parameter<int>("angle_disable_max", 0);
+        this->declare_parameter<std::vector<int64_t>>("ignored_angles", std::vector<int64_t>{});
         this->declare_parameter<double>("distance_unit", 0.4);
         this->declare_parameter<double>("horizontal_angle_resolution", 0.18);
         this->declare_parameter<std::string>("frame_id", "laser_link");
@@ -98,6 +130,8 @@ namespace lslidar_driver {
         this->get_parameter("max_range", max_range);
         this->get_parameter("angle_disable_min", angle_disable_min);
         this->get_parameter("angle_disable_max", angle_disable_max);
+        std::vector<int64_t> ignored_angles;
+        this->get_parameter("ignored_angles", ignored_angles);
         this->get_parameter("distance_unit", distance_unit);
         this->get_parameter("horizontal_angle_resolution", horizontal_angle_resolution);
         this->get_parameter("frame_id", frame_id);
@@ -105,6 +139,23 @@ namespace lslidar_driver {
         this->get_parameter("publish_scan", publish_scan);
         this->get_parameter("scan_num", scan_num);
         this->get_parameter("coordinate_opt", coordinate_opt);
+
+        ignored_angle_ranges_.clear();
+        if (!ignored_angles.empty()) {
+            if (ignored_angles.size() % 2 != 0) {
+                LS_ERROR << "ignored_angles must contain an even number of entries." << LS_END;
+                return false;
+            }
+            for (size_t i = 0; i < ignored_angles.size(); i += 2) {
+                ignored_angle_ranges_.emplace_back(
+                        normalizeAngle100(static_cast<int>(ignored_angles[i])),
+                        normalizeAngle100(static_cast<int>(ignored_angles[i + 1])));
+            }
+        } else {
+            ignored_angle_ranges_.emplace_back(
+                    normalizeAngle100(angle_disable_min),
+                    normalizeAngle100(angle_disable_max));
+        }
 
         return true;
     }
@@ -120,6 +171,13 @@ namespace lslidar_driver {
         LS_PARAM << "max_range: "<< max_range << LS_END;
         LS_PARAM << "angle_disable_min: " << angle_disable_min << LS_END;
         LS_PARAM << "angle_disable_max: " << angle_disable_max << LS_END;
+        if (!ignored_angle_ranges_.empty()) {
+            for (size_t i = 0; i < ignored_angle_ranges_.size(); ++i) {
+                LS_PARAM << "ignored_angles[" << i << "]: ["
+                         << ignored_angle_ranges_[i].first << ", "
+                         << ignored_angle_ranges_[i].second << "]" << LS_END;
+            }
+        }
         LS_PARAM << "horizontal_angle_resolution: " << horizontal_angle_resolution << LS_END;
         LS_PARAM << "frame_id: " << frame_id.c_str() << LS_END;
         LS_PARAM << "pointcloud_topic: " << pointcloud_topic.c_str() << LS_END;
@@ -232,38 +290,6 @@ namespace lslidar_driver {
             LS_ERROR << "cannot create all ROS IO." << LS_END;
             return false;
         }
-
-        while (angle_disable_min < 0)
-			angle_disable_min += 36000;
-		while (angle_disable_max < 0)
-			angle_disable_max += 36000;
-		while (angle_disable_min > 36000)
-			angle_disable_min -= 36000;
-		while (angle_disable_max > 36000)
-			angle_disable_max -= 36000;
-		if (angle_disable_max == angle_disable_min)
-		{
-			angle_able_min = 0;
-			angle_able_max = 36000;
-		}
-		else
-		{
-			if (angle_disable_min < angle_disable_max && angle_disable_min != 0)
-			{
-				angle_able_min = angle_disable_max;
-				angle_able_max = angle_disable_min + 36000;
-			}
-			if (angle_disable_min < angle_disable_max && angle_disable_min == 0)
-			{
-				angle_able_min = angle_disable_max;
-				angle_able_max = 36000;
-			}
-			if (angle_disable_min > angle_disable_max)
-			{
-				angle_able_min = angle_disable_max;
-				angle_able_max = angle_disable_min;
-			}
-		}
   
         // create the sin and cos table for different azimuth values
         for (int j = 0; j < 36000; ++j) {
@@ -702,11 +728,7 @@ namespace lslidar_driver {
             }
             //check if the point is valid
             if (!(firings.distance[fir_idx] >= min_range && firings.distance[fir_idx] <= max_range)) continue;
-            if (angle_able_max > 36000){
-                if((firings.azimuth[fir_idx] > (angle_able_max - 36000)) && firings.azimuth[fir_idx] < angle_able_min) continue;
-            } else {
-                if((firings.azimuth[fir_idx] > angle_able_max ) || firings.azimuth[fir_idx] < angle_able_min) continue;
-            }
+            if (isAngleDisabled(firings.azimuth[fir_idx])) continue;
             //convert the point to xyz coordinate
             size_t table_idx = firings.azimuth[fir_idx];
             double cos_azimuth = cos_azimuth_table[table_idx];
@@ -886,11 +908,7 @@ namespace lslidar_driver {
 
                 //check if the point is valid
                 if (!(firings.distance[fir_idx] >= min_range && firings.distance[fir_idx] <= max_range)) continue;
-                if (angle_able_max > 36000){
-                    if((firings.azimuth[fir_idx] > (angle_able_max - 36000)) && firings.azimuth[fir_idx] < angle_able_min) continue;
-                } else {
-                    if((firings.azimuth[fir_idx] > angle_able_max ) || firings.azimuth[fir_idx] < angle_able_min) continue;
-                }
+                if (isAngleDisabled(firings.azimuth[fir_idx])) continue;
 
                 //convert the point to xyz coordinate
                 size_t table_idx = firings.azimuth[fir_idx];
